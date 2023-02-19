@@ -1,0 +1,5 @@
+# After installing JAX+jaxlib
+absl-py
+git+https://github.com/deepmind/dm-haiku # recommended by DeepMind
+git+https://github.com/deepmind/optax.git # meh?
+# chex # this looks to be updated more frequently than the two above, but it's also required by optax?
