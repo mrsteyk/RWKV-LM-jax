@@ -208,30 +208,37 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
 # if we apply the C vmap then we will get shapes of:
 #  * w and u being scalar
 #  * k and v being T 1d vectors
-# @functools.partial(jax.vmap, in_axes=(1, 1, None, None), out_axes=0)
-@jax.jit
+# WORKS BUT DOES NOT MATCH!!!
+@functools.partial(jax.vmap, in_axes=(0, 0, 1, 1), out_axes=1)
+# @jax.jit
 def WKV_n(w, u, k, v):
+    dtype = k.dtype
+    w, u, k, v = w.astype(jnp.float32), u.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32)
+    # print(w, u, '---', w.shape, u.shape, k.shape, v.shape)
+    # print(w.shape, u.shape, k.shape, v.shape)
     # This should operate over T, idk how to pass `w, u`
     def body(carry, elems):
+        # print('c', carry, 'e', elems)
         p, q, o = carry
         k, v = elems
+        # print(k, v, k.shape, v.shape, u.shape, w.shape)
         
-        no = max(o, u + k)
+        no = jnp.maximum(o, u + k)
         A = jnp.exp(o - no)
         B = jnp.exp(u + k - no)
         y = (A * p + B * v) / (A * q + B)
 
-        no = max(w + o, k)
-        A = exp(w + o - no)
-        B = exp(k - no)
-        p = A * p + B * v[ii]
+        no = jnp.maximum(w + o, k)
+        A = jnp.exp(w + o - no)
+        B = jnp.exp(k - no)
+        p = A * p + B * v
         q = A * q + B
         o = no
         return ((p, q, o), y)
     # But at what fucking point do I apply vmap?
     # CUDA core iterates over T, one C at a time. y produced is valid for only one C and spans over T
     # concat makes so we get pair of (k, v)
-    return jax.lax.scan(body, (0, 0, -1e38), jnp.concat([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1))
+    return jax.lax.scan(body, (0, 0, -1e38), jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1))[-1].astype(dtype)
 
 
 @dataclasses.dataclass
@@ -284,7 +291,11 @@ class Attention(hk.Module):
 
         # TODOne(mrsteyk): CUDA core reimplement... why...
         # I did it in the end...
-        wkv = WKV(time_decay, time_first, k, v).T
+        # print(k.shape, v.shape)
+        # wkv = WKV_n(time_decay[:, jnp.newaxis], time_first[:, jnp.newaxis], k, v).T
+        wkv = WKV_n(time_decay, time_first, k, v)
+        # print(wkv)
+        # wkv = WKV(time_decay, time_first, k, v).T
         rwkv = sr * wkv
         rwkv = output(rwkv)
         # print(f"att{self.layer_id}", rwkv)
