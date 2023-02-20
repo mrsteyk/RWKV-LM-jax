@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import math
 from typing import Optional
 
@@ -200,6 +201,38 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
     # y = y.swapaxes(1, 0)
     # return y[0].T.astype(dtype)
     return y.T.astype(dtype)
+
+# Perhaps my original vmap idea was correct? because we can only process one C at a time, I just got the axi incorrect (it was 0, not 1)
+# But then again how the hell do I properly pass it inside the scan'd func?
+# ergh... we also have k&v of shapes (T, C)
+# if we apply the C vmap then we will get shapes of:
+#  * w and u being scalar
+#  * k and v being T 1d vectors
+# @functools.partial(jax.vmap, in_axes=(1, 1, None, None), out_axes=0)
+@jax.jit
+def WKV_n(w, u, k, v):
+    # This should operate over T, idk how to pass `w, u`
+    def body(carry, elems):
+        p, q, o = carry
+        k, v = elems
+        
+        no = max(o, u + k)
+        A = jnp.exp(o - no)
+        B = jnp.exp(u + k - no)
+        y = (A * p + B * v) / (A * q + B)
+
+        no = max(w + o, k)
+        A = exp(w + o - no)
+        B = exp(k - no)
+        p = A * p + B * v[ii]
+        q = A * q + B
+        o = no
+        return ((p, q, o), y)
+    # But at what fucking point do I apply vmap?
+    # CUDA core iterates over T, one C at a time. y produced is valid for only one C and spans over T
+    # concat makes so we get pair of (k, v)
+    return jax.lax.scan(body, (0, 0, -1e38), jnp.concat([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1))
+
 
 @dataclasses.dataclass
 class Attention(hk.Module):
