@@ -144,8 +144,8 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
     w = -jnp.exp(w)
     # k = k.T
     # v = v.T
-    k = k[:, jnp.newaxis]
-    v = v[:, jnp.newaxis]
+    # k = k[:, jnp.newaxis]
+    # v = v[:, jnp.newaxis]
     # print(k.shape, v.shape)
     sl = []
     s = 2
@@ -159,8 +159,8 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
 
     oo = k.copy()
     pp = v.copy()
-    qq = jnp.ones((T, 1, C), dtype=w.dtype)
-    dd = jnp.ones((T, 1, 1), dtype=w.dtype)
+    qq = jnp.ones((T, C), dtype=w.dtype)
+    dd = jnp.ones((T, 1), dtype=w.dtype)
     for ss, sa, sb, sz in sl:
         p = pp[sb:sz:ss]
         if p.shape[0] == 0:
@@ -187,17 +187,19 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
     # (1024, 2) (1024, 2)
 
     # print(o.shape, k.shape, v.shape, u.shape)
-    x = jnp.maximum(o, k + u[jnp.newaxis, jnp.newaxis, :])
-    # x = jnp.maximum(o, k + u[jnp.newaxis, :])
+    # x = jnp.maximum(o, k + u[jnp.newaxis, jnp.newaxis, :])
+    x = jnp.maximum(o, k + u[jnp.newaxis, :])
     a = jnp.exp(o - x)
     b = jnp.exp(k + u - x)
     y = (a * p + b * v) / (a * q + b)
     # print(v.shape, y.shape, v, y, sl)
-    y = jnp.concatenate([v[:1, :, :], y[1:, :, :]]) # shapes=[(1024, 2), (1024,)]
-    # y = jnp.concatenate([v[:1, :], y[1:, :]]) # shapes=[(1024, 2), (1024,)]
+    # print(v.shape, y.shape)
+    # y = jnp.concatenate([v[:1, :, :], y[1:, :, :]]) # shapes=[(1024, 2), (1024,)]
+    y = jnp.concatenate([v[:1, :], y[1:, :]]) # shapes=[(1024, 2), (1024,)]
     # y = y.T
-    y = y.swapaxes(1, 0)
-    return y[0].T.astype(dtype)
+    # y = y.swapaxes(1, 0)
+    # return y[0].T.astype(dtype)
+    return y.T.astype(dtype)
 
 @dataclasses.dataclass
 class Attention(hk.Module):
