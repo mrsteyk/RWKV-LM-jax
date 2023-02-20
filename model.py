@@ -62,11 +62,14 @@ def time_shift_pad(x):
     # Shape should be T, C? (jax.vmap already handles the funny B dim)
     return jnp.pad(x, [(1, 0), (0, 0)])[:-1, :]
 
-# This is my nightmare
+# This is my nightmare, it is also numerically unstable, I just wasn't able to reproduce the results after a while...
 # decay, first, k, v
 @jax.jit
-def WKV(w, u, k, v):
+def WKV_(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
     # Ok, so knowing a bit how RNN works...
+    # I SPECIFICALLY SAID IN THE FUCKING POLICY TO COMPUTE IN f32
+    dtype = k.dtype
+    w, u, k, v = w.astype(jnp.float32), u.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32)
 
     # if '.time_decay' in x:
     #     w[x] = w[x].float()
@@ -75,7 +78,8 @@ def WKV(w, u, k, v):
 
     # if 'key.weight' in x or 'value.weight' in x or 'receptance.weight' in x or 'output.weight' in x:
     #     w[x] = w[x].t()
-    k, v = k.T, v.T
+    k = k.T
+    v = v.T
 
     # ww = time_first + k
     # p = torch.maximum(pp, ww)
@@ -93,10 +97,13 @@ def WKV(w, u, k, v):
     # ok so, time_decay to k will happen for every token at the end, so we have 0..T-1 times the time_decay for every token in reverse
     # reversing 0..T-1 will give us T-2..=0. and we also do time_first
     T = k.shape[1]
-    time_decay_k = jnp.arange(-(T-2), 1)[jnp.newaxis, :] * jnp.exp(w)[:, jnp.newaxis]
+    # exp of w over time
+    time_decay_k = jnp.arange(-(T-2), 1) * jnp.exp(w)[:, jnp.newaxis]
     # print(time_decay_k.shape)
-    time_decay_k = jnp.concatenate([time_decay_k, u[:,jnp.newaxis]], axis=1)
+    # Complete time
+    time_decay_k = jnp.concatenate([time_decay_k, u[:, jnp.newaxis]], axis=1)
     # print(time_decay_k.shape)
+    # Exp of complete time, so we get the full decay for the convolution
     time_decay_k = jnp.exp(time_decay_k)[:, jnp.newaxis]
     # print(time_decay_k.shape)
 
@@ -111,11 +118,86 @@ def WKV(w, u, k, v):
     a = a[jnp.newaxis, :]
     k = k[jnp.newaxis, :]
     # print(a.shape, k.shape)
-    a = jax.lax.conv_general_dilated(jnp.pad(a, [(0,0)] * 2 + [(T-1, 0)]), time_decay_k, (1,), [(0, 0)], feature_group_count=C)
-    b = jax.lax.conv_general_dilated(jnp.pad(k, [(0,0)] * 2 + [(T-1, 0)]), time_decay_k, (1,), [(0, 0)], feature_group_count=C)
+    # TODO: check if precision really matters...
+    a = jax.lax.conv_general_dilated(jnp.pad(a, [(0, 0), (0, 0), (T-1, 0)]), time_decay_k, (1,), [(0, 0)], feature_group_count=C, precision=jax.lax.Precision.HIGHEST)
+    b = jax.lax.conv_general_dilated(jnp.pad(k, [(0, 0), (0, 0), (T-1, 0)]), time_decay_k, (1,), [(0, 0)], feature_group_count=C, precision=jax.lax.Precision.HIGHEST)
+
+    # now you can clown upon me
+    # a[a==0] = jnp.finfo(jnp.float32).eps
+    # b = b.at[b==0].set(jnp.finfo(jnp.float32).max)
+    # b = b.at[b==0].set(1)
+    # print(a, b, jnp.any(a == 0), jnp.any(b == 0))
 
     # I am not going to double transpose the matrix, you won't make me
-    return (a/b)[0]
+    return (a/b)[0].astype(dtype)
+
+# Foil Inc.
+# Now defunct
+@jax.jit
+def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
+    T, C = k.shape
+    # print(k.shape)
+
+    dtype = k.dtype
+    w, u, k, v = w.astype(jnp.float32), u.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32)
+
+    w = -jnp.exp(w)
+    # k = k.T
+    # v = v.T
+    k = k[:, jnp.newaxis]
+    v = v[:, jnp.newaxis]
+    # print(k.shape, v.shape)
+    sl = []
+    s = 2
+    while s <= T:
+        sl += [(s, (s >> 1) - 1, s - 1, T - T % s)]
+        s = s << 1
+    s = s >> 1
+    while s >= 2:
+        sl += [(s, s - 1, (s >> 1) * 3 - 1, T - (T % s < (s >> 1)) * (s >> 1))]
+        s = s >> 1
+
+    oo = k.copy()
+    pp = v.copy()
+    qq = jnp.ones((T, 1, C), dtype=w.dtype)
+    dd = jnp.ones((T, 1, 1), dtype=w.dtype)
+    for ss, sa, sb, sz in sl:
+        p = pp[sb:sz:ss]
+        if p.shape[0] == 0:
+            continue
+        q = qq[sb:sz:ss]
+        d = dd[sb:sz:ss]
+        o = oo[sb:sz:ss]
+        e = oo[sa:sz:ss] + d * w
+        x = jnp.maximum(e, o)
+        a = jnp.exp(e - x)
+        b = jnp.exp(o - x)
+        # print('inner', p.shape, pp.shape)
+        pp = pp.at[sb:sz:ss].set(a * pp[sa:sz:ss] + b * p)
+        qq = qq.at[sb:sz:ss].set(a * qq[sa:sz:ss] + b * q)
+        dd = dd.at[sb:sz:ss].set(dd[sa:sz:ss] + d)
+        oo = oo.at[sb:sz:ss].set(x)
+
+    p = jnp.roll(pp, 1, axis=0)
+    q = jnp.roll(qq, 1, axis=0)
+    o = jnp.roll(oo, 1, axis=0)
+    # print(p, q, o, pp.shape, p.shape, qq.shape, q.shape, oo.shape, o.shape, k.shape, v.shape)
+    # (1024, 2) (1024, 2)
+    # (2, 1, 1024) (2, 1, 1024)
+    # (1024, 2) (1024, 2)
+
+    # print(o.shape, k.shape, v.shape, u.shape)
+    x = jnp.maximum(o, k + u[jnp.newaxis, jnp.newaxis, :])
+    # x = jnp.maximum(o, k + u[jnp.newaxis, :])
+    a = jnp.exp(o - x)
+    b = jnp.exp(k + u - x)
+    y = (a * p + b * v) / (a * q + b)
+    # print(v.shape, y.shape, v, y, sl)
+    y = jnp.concatenate([v[:1, :, :], y[1:, :, :]]) # shapes=[(1024, 2), (1024,)]
+    # y = jnp.concatenate([v[:1, :], y[1:, :]]) # shapes=[(1024, 2), (1024,)]
+    # y = y.T
+    y = y.swapaxes(1, 0)
+    return y[0].T.astype(dtype)
 
 @dataclasses.dataclass
 class Attention(hk.Module):
@@ -163,11 +245,15 @@ class Attention(hk.Module):
         r = receptance(xr)
         sr = jax.nn.sigmoid(r)
 
+        # print(np.any(np.isinf(xx)), np.any(np.isinf(xk)), np.any(np.isinf(k)))
+
         # TODOne(mrsteyk): CUDA core reimplement... why...
         # I did it in the end...
         wkv = WKV(time_decay, time_first, k, v).T
         rwkv = sr * wkv
-        return output(rwkv)
+        rwkv = output(rwkv)
+        # print(f"att{self.layer_id}", rwkv)
+        return rwkv
 
 @dataclasses.dataclass
 class FFN(hk.Module):
@@ -195,7 +281,9 @@ class FFN(hk.Module):
         k = key(xk)
         k = jnp.square(jax.nn.relu(k))
         kv = value(k)
-        return jax.nn.sigmoid(receptance(xr)) * kv
+        rkv = jax.nn.sigmoid(receptance(xr)) * kv
+        # print(f"ffn{self.layer_id}", x.shape, x, rkv)
+        return rkv
 
 @dataclasses.dataclass
 class Block(hk.Module):
@@ -216,7 +304,10 @@ class Block(hk.Module):
 
         # --- Calc ---
 
-        x = x + att(ln1(x))
+        # You are smart (C) CrossProduct
+        xx = ln1(x)
+        # print(x) # matches pure jax
+        x = x + att(xx)
         x = x + ffn(ln2(x))
 
         # TODO(mrsteyk): tiny QKV ATT
@@ -236,7 +327,7 @@ class RWKV(hk.Module):
 
     def __call__(self, x):
         emb = hk.Embed(vocab_size=self.vocab_size, embed_dim=self.n_embd, name="emb")
-        ln0 = hk.LayerNorm(axis=-1, param_axis=-1, create_scale=True, create_offset=True)
+        ln0 = hk.LayerNorm(axis=-1, param_axis=-1, create_scale=True, create_offset=True, name="ln0")
         blocks = [Block(layer_id=i, num_layers=self.num_layers, n_embd=self.n_embd, dim_att=self.dim_att, dim_ffn=self.dim_ffn, name=f"block_{i}") for i in range(self.num_layers)]
         ln_out = hk.LayerNorm(axis=-1, param_axis=-1, create_scale=True, create_offset=True, name="ln_out")
         head = hk.Linear(self.vocab_size, with_bias=False, name="head")
