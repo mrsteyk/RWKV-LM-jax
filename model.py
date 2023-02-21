@@ -209,7 +209,7 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
 #  * w and u being scalar
 #  * k and v being T 1d vectors
 # WORKS BUT DOES NOT MATCH!!!
-@functools.partial(jax.vmap, in_axes=(0, 0, 1, 1), out_axes=1)
+@functools.partial(jax.vmap, in_axes=(0, 0, 1, 1), out_axes=(0, 1))
 # @jax.jit
 def WKV_n(w, u, k, v):
     dtype = k.dtype
@@ -240,7 +240,8 @@ def WKV_n(w, u, k, v):
     # CUDA core iterates over T, one C at a time. y produced is valid for only one C and spans over T
     # concat makes so we get pair of (k, v)
     # I don't take [-1] here so it can be reused for getting the hidden state...
-    return jax.lax.scan(body, (0.0, 0.0, -1e38), jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1)).astype(dtype)
+    hidden_state, out = jax.lax.scan(body, (0.0, 0.0, -1e38), jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1))
+    return (hidden_state, out.astype(dtype))
 
 
 @dataclasses.dataclass
