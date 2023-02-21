@@ -257,10 +257,6 @@ class Attention(hk.Module):
     # done through a policy
     # calc_dtype: np.dtype = jnp.float32
 
-    # def __post_init__(self):
-    #     ratio_0_to_1 = layer_id / (num_layers - 1)
-    #     ratio_1_to_almost0 = 1.0 - (layer_id / num_layers)
-    
     def __call__(self, x):
         time_first = hk.get_parameter("time_first", [self.dim_att], init=time_first_init)
         time_decay = hk.get_parameter("time_decay", [self.dim_att], init=time_decay_init(self.layer_id, self.num_layers))
@@ -297,8 +293,8 @@ class Attention(hk.Module):
         # print(k.shape, v.shape)
         # wkv = WKV_n(time_decay[:, jnp.newaxis], time_first[:, jnp.newaxis], k, v).T
         wkv = WKV_n(time_decay, time_first, k, v)[-1]
-        # print(wkv)
         # wkv = WKV(time_decay, time_first, k, v).T
+        # print(wkv)
         rwkv = sr * wkv
         rwkv = output(rwkv)
         # print(f"att{self.layer_id}", rwkv)
