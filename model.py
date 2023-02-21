@@ -214,6 +214,7 @@ def WKV(w: jnp.ndarray, u: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray):
 def WKV_n(w, u, k, v):
     dtype = k.dtype
     w, u, k, v = w.astype(jnp.float32), u.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32)
+    w = -jnp.exp(w)
     # print(w, u, '---', w.shape, u.shape, k.shape, v.shape)
     # print(w.shape, u.shape, k.shape, v.shape)
     # This should operate over T, idk how to pass `w, u`
@@ -238,7 +239,8 @@ def WKV_n(w, u, k, v):
     # But at what fucking point do I apply vmap?
     # CUDA core iterates over T, one C at a time. y produced is valid for only one C and spans over T
     # concat makes so we get pair of (k, v)
-    return jax.lax.scan(body, (0, 0, -1e38), jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1))[-1].astype(dtype)
+    # I don't take [-1] here so it can be reused for getting the hidden state...
+    return jax.lax.scan(body, (0.0, 0.0, -1e38), jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1)).astype(dtype)
 
 
 @dataclasses.dataclass
@@ -293,7 +295,7 @@ class Attention(hk.Module):
         # I did it in the end...
         # print(k.shape, v.shape)
         # wkv = WKV_n(time_decay[:, jnp.newaxis], time_first[:, jnp.newaxis], k, v).T
-        wkv = WKV_n(time_decay, time_first, k, v)
+        wkv = WKV_n(time_decay, time_first, k, v)[-1]
         # print(wkv)
         # wkv = WKV(time_decay, time_first, k, v).T
         rwkv = sr * wkv
