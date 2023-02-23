@@ -243,6 +243,45 @@ def WKV_n(w, u, k, v):
     hidden_state, out = jax.lax.scan(body, (0.0, 0.0, -1e38), jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=-1))
     return (hidden_state, out.astype(dtype))
 
+# HOW CAN ERROR SKYROCKET EVEN MORE????
+@jax.jit
+def WKV_nn(time_decay, time_first, k, v):
+    # times have shape of (C,)
+    # k, v have shape of (T, C)
+    T, C = k.shape
+    dtype = k.dtype
+    time_decay, time_first, k, v = time_decay.astype(jnp.float32), time_first.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32)
+    time_decay = -jnp.exp(time_decay)
+    def body(carry, elems):
+        # print('c', carry, 'e', elems)
+        # aa, bb, pp
+        aa, bb, pp = carry
+        k, v = elems
+        
+        ww = time_first + k
+        # no is p
+        p = jnp.maximum(pp, ww)
+        # A
+        e1 = jnp.exp(pp - p)
+        # B
+        e2 = jnp.exp(ww - p)
+        a = e1 * aa + e2 * v
+        b = e1 * bb + e2
+
+        ww = pp + time_decay
+        p = jnp.maximum(ww, k)
+        e1 = jnp.exp(ww - p)
+        e2 = jnp.exp(k - p)
+        aa = e1 * aa + e2 * v
+        bb = e1 * bb + e2
+        pp = p
+        return ((aa, bb, pp), (a / b).astype(dtype))
+    hidden_state, out = jax.lax.scan(
+        body,
+        (jnp.array([0.0] * C, dtype=jnp.float32), jnp.array([0.0] * C, dtype=jnp.float32), jnp.array([-1e38] * C, dtype=jnp.float32)),
+        jnp.concatenate([k[:, jnp.newaxis], v[:, jnp.newaxis]], axis=1)
+    )
+    return (hidden_state, out)
 
 @dataclasses.dataclass
 class Attention(hk.Module):
@@ -292,7 +331,7 @@ class Attention(hk.Module):
         # I did it in the end...
         # print(k.shape, v.shape)
         # wkv = WKV_n(time_decay[:, jnp.newaxis], time_first[:, jnp.newaxis], k, v).T
-        wkv = WKV_n(time_decay, time_first, k, v)[-1]
+        wkv = WKV_nn(time_decay, time_first, k, v)[-1]
         # wkv = WKV(time_decay, time_first, k, v).T
         # print(wkv)
         rwkv = sr * wkv
